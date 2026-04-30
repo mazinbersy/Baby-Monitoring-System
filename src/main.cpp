@@ -6,7 +6,8 @@
 const char* WIFI_SSID = "Mazin";
 const char* WIFI_PASS = "12345678";
 
-const char* SERVER_URL = "http://172.20.10.12:3000/frame";
+const char* SERVER_URL  = "http://172.20.10.12:3000/frame";
+const char* STATUS_URL  = "http://172.20.10.12:3000/status";
 
 
 // AI-Thinker pin map
@@ -83,10 +84,32 @@ void setup() {
     Serial.println(WiFi.localIP());
 }
 
-HTTPClient http;
-bool httpConnected = false;
+bool isStreaming = false;
+unsigned long lastStatusCheck = 0;
+const unsigned long STATUS_INTERVAL = 1000;
 
 void loop() {
+    unsigned long now = millis();
+
+    if (WiFi.status() == WL_CONNECTED && now - lastStatusCheck >= STATUS_INTERVAL) {
+        HTTPClient h;
+        h.begin(STATUS_URL);
+        if (h.GET() == 200) {
+            bool newState = h.getString() == "1";
+            if (newState != isStreaming) {
+                Serial.println(newState ? "Camera ON" : "Camera OFF");
+                isStreaming = newState;
+            }
+        }
+        h.end();
+        lastStatusCheck = now;
+    }
+
+    if (!isStreaming) {
+        delay(100);
+        return;
+    }
+
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
         delay(100);
@@ -94,18 +117,14 @@ void loop() {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-        if (!httpConnected) {
-            http.begin(SERVER_URL);
-            http.addHeader("Content-Type", "image/jpeg");
-            http.setReuse(true);
-            httpConnected = true;
-        }
-        int code = http.POST(fb->buf, fb->len);
+        HTTPClient h;
+        h.begin(SERVER_URL);
+        h.addHeader("Content-Type", "image/jpeg");
+        int code = h.POST(fb->buf, fb->len);
         if (code != 200) {
             Serial.printf("POST failed: %d\n", code);
-            http.end();
-            httpConnected = false;
         }
+        h.end();
     }
 
     esp_camera_fb_return(fb);

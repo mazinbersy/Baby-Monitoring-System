@@ -26,12 +26,28 @@
       color: #555;
     }
     #status.live { color: #4caf50; }
+    #toggleBtn {
+      margin-top: 16px;
+      padding: 10px 32px;
+      font-size: 14px;
+      font-family: monospace;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background: #4caf50;
+      color: #fff;
+      letter-spacing: 1px;
+    }
+    #toggleBtn.off {
+      background: #f44336;
+    }
   </style>
 </head>
 <body>
   <h2>BABY MONITOR</h2>
   <img id="feed" width="640" height="480" />
   <p id="status">Waiting for stream...</p>
+  <button id="toggleBtn">TURN ON</button>
 
   <script>
     const img = document.getElementById("feed");
@@ -53,6 +69,21 @@
       status.textContent = "Disconnected";
       status.className = "";
     };
+
+    const btn = document.getElementById("toggleBtn");
+    let cameraOn = false;
+
+    btn.addEventListener("click", async () => {
+      const endpoint = cameraOn ? "/stop" : "/start";
+      await fetch(endpoint, { method: "POST" });
+      cameraOn = !cameraOn;
+      btn.textContent = cameraOn ? "TURN OFF" : "TURN ON";
+      btn.classList.toggle("off", cameraOn);
+      if (!cameraOn) {
+        status.textContent = "Camera off";
+        status.className = "";
+      }
+    });
   </script>
 </body>
 </html>

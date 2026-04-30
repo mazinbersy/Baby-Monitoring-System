@@ -9,6 +9,8 @@ const wss = new WebSocketServer({ server });
 // Track connected browser clients
 const clients = new Set();
 
+let streaming = false;
+
 wss.on("connection", (ws) => {
   clients.add(ws);
   console.log(`Browser connected. Total: ${clients.size}`);
@@ -16,6 +18,21 @@ wss.on("connection", (ws) => {
     clients.delete(ws);
     console.log(`Browser disconnected. Total: ${clients.size}`);
   });
+});
+
+// ESP32 polls this to know whether to stream
+app.get("/status", (req, res) => {
+  res.send(streaming ? "1" : "0");
+});
+
+app.post("/start", (req, res) => {
+  streaming = true;
+  res.sendStatus(200);
+});
+
+app.post("/stop", (req, res) => {
+  streaming = false;
+  res.sendStatus(200);
 });
 
 // ESP32 posts raw JPEG frames here
