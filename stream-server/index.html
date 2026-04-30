@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Baby Monitor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0f0f0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      color: #fff;
+      font-family: monospace;
+    }
+    h2 { margin-bottom: 16px; letter-spacing: 3px; color: #aaa; }
+    #feed {
+      border: 2px solid #333;
+      border-radius: 8px;
+      max-width: 90vw;
+    }
+    #status {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #555;
+    }
+    #status.live { color: #4caf50; }
+  </style>
+</head>
+<body>
+  <h2>BABY MONITOR</h2>
+  <img id="feed" width="640" height="480" />
+  <p id="status">Waiting for stream...</p>
+
+  <script>
+    const img = document.getElementById("feed");
+    const status = document.getElementById("status");
+    const ws = new WebSocket(`ws://${location.host}`);
+
+    ws.onopen = () => {
+      status.textContent = "Connected — waiting for camera...";
+      status.className = "";
+    };
+
+    ws.onmessage = (e) => {
+      img.src = "data:image/jpeg;base64," + e.data;
+      status.textContent = "LIVE";
+      status.className = "live";
+    };
+
+    ws.onclose = () => {
+      status.textContent = "Disconnected";
+      status.className = "";
+    };
+  </script>
+</body>
+</html>
