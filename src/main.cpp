@@ -2,12 +2,13 @@
 #include "esp_camera.h"
 #include "WiFi.h"
 #include "HTTPClient.h"
+#include "WiFiClientSecure.h"
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 // Edit these four values; everything else is derived from them.
 #define WIFI_SSID    "iPhone"
 #define WIFI_PASS    "12345678"
-#define SERVER_BASE  "http://172.20.10.3:3000"   // change to your server URL
+#define SERVER_BASE  "https://baby-monitoring-system-production.up.railway.app"
 #define DEVICE_ID    "baby_monitor_1"
 #define DEVICE_KEY   "bms-secret-key-2024"       // must match server config.js
 
@@ -47,6 +48,9 @@ static bool          s_streaming       = false;
 static unsigned long s_lastStatusMs    = 0;
 static unsigned long s_lastWifiRetryMs = 0;
 
+// Persistent HTTPS client for frame uploads — avoids TLS handshake on every frame
+static WiFiClientSecure s_frameClient;
+
 // ─── UART line buffer ─────────────────────────────────────────────────────────
 static char s_uartBuf[64];
 static int  s_uartPos = 0;
@@ -68,8 +72,10 @@ static void ensureWifi() {
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 static int postJson(const char* path, const String& body) {
+    WiFiClientSecure client;
+    client.setInsecure();
     HTTPClient h;
-    h.begin(String(SERVER_BASE) + path);
+    h.begin(client, String(SERVER_BASE) + path);
     h.addHeader("Content-Type", "application/json");
     h.addHeader("x-device-key", DEVICE_KEY);
     h.setTimeout(5000);
@@ -99,11 +105,10 @@ static void sendAlert(const char* type, const char* message) {
 static void dispatchLine(const char* line) {
     Serial.printf("[UART] <- %s\n", line);
 
-    if      (strcmp(line, "CRY") == 0) sendAlert("CRYING",   "Baby crying detected");
-    // Add more codes here as the Nucleo firmware implements them:
-    // else if (strcmp(line, "HOT") == 0) sendAlert("TEMP_HIGH", "Temperature too high");
-    // else if (strcmp(line, "CLD") == 0) sendAlert("TEMP_LOW",  "Temperature too low");
-    // else if (strcmp(line, "MOV") == 0) sendAlert("MOVEMENT",  "Unexpected movement detected");
+    if      (strstr(line, "CRY") != NULL) sendAlert("CRYING",   "Baby crying detected");
+    // else if (strstr(line, "HOT") != NULL) sendAlert("TEMP_HIGH", "Temperature too high");
+    // else if (strstr(line, "CLD") != NULL) sendAlert("TEMP_LOW",  "Temperature too low");
+    // else if (strstr(line, "MOV") != NULL) sendAlert("MOVEMENT",  "Unexpected movement detected");
     else Serial.printf("[UART] Unknown code: %s\n", line);
 }
 
@@ -134,8 +139,10 @@ static void pollStatus() {
     if (now - s_lastStatusMs < STATUS_INTERVAL_MS) return;
     s_lastStatusMs = now;
 
+    WiFiClientSecure client;
+    client.setInsecure();
     HTTPClient h;
-    h.begin(String(SERVER_BASE) + "/api/status");
+    h.begin(client, String(SERVER_BASE) + "/api/status");
     h.addHeader("x-device-key", DEVICE_KEY);
     h.setTimeout(3000);
     int code = h.GET();
@@ -158,9 +165,10 @@ static void captureAndSend() {
     if (!fb) { Serial.println("[Cam] Frame capture failed"); return; }
 
     HTTPClient h;
-    h.begin(String(SERVER_BASE) + "/api/frame");
+    h.begin(s_frameClient, String(SERVER_BASE) + "/api/frame");
     h.addHeader("Content-Type", "image/jpeg");
     h.addHeader("x-device-key", DEVICE_KEY);
+    h.addHeader("Connection", "keep-alive");
     h.setTimeout(5000);
     int code = h.POST(fb->buf, fb->len);
     if (code != 200 && code != 201)
@@ -195,15 +203,9 @@ static bool initCamera() {
     cfg.xclk_freq_hz = 20000000;
     cfg.pixel_format = PIXFORMAT_JPEG;
 
-    if (psramFound()) {
-        cfg.frame_size   = FRAMESIZE_VGA;
-        cfg.jpeg_quality = 10;
-        cfg.fb_count     = 2;
-    } else {
-        cfg.frame_size   = FRAMESIZE_QVGA;
-        cfg.jpeg_quality = 12;
-        cfg.fb_count     = 1;
-    }
+    cfg.frame_size   = FRAMESIZE_QVGA;
+    cfg.jpeg_quality = 20;
+    cfg.fb_count     = psramFound() ? 2 : 1;
 
     return esp_camera_init(&cfg) == ESP_OK;
 }
@@ -222,6 +224,8 @@ void setup() {
         while (true) delay(1000);
     }
     Serial.println("[Cam] Init OK");
+
+    s_frameClient.setInsecure();
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
