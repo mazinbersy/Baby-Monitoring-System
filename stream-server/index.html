@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Baby Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    header h1 { font-size: 15px; letter-spacing: 3px; color: #aaa; }
+    #wsIndicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: #666;
+    }
+    #wsDot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #555;
+      transition: background 0.3s;
+    }
+    #wsDot.connected    { background: #4caf50; }
+    #wsDot.disconnected { background: #f44336; }
+
+    /* ── Layout ── */
+    main {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 16px;
+      padding: 20px;
+      flex: 1;
+    }
+    @media (max-width: 800px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    /* ── Camera panel ── */
+    #cameraPanel {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #feedWrapper {
+      position: relative;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      overflow: hidden;
+      aspect-ratio: 4/3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #feed {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: none;
+    }
+    #feedOverlay {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      color: #555;
+      font-size: 13px;
+      letter-spacing: 1px;
+    }
+    #feedOverlay svg { opacity: 0.3; }
+
+    #cameraControls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #toggleBtn {
+      padding: 9px 28px;
+      font-size: 13px;
+      font-family: monospace;
+      letter-spacing: 1px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background: #4caf50;
+      color: #fff;
+      transition: background 0.2s;
+    }
+    #toggleBtn:disabled { opacity: 0.4; cursor: default; }
+    #toggleBtn.off { background: #e53935; }
+    #streamStatus { font-size: 11px; color: #555; }
+    #streamStatus.live { color: #4caf50; }
+
+    /* ── Alerts panel ── */
+    #alertsPanel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #alertsPanel h2 {
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: #555;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    #alertList {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      max-height: calc(100vh - 160px);
+    }
+    .alert-item {
+      background: #1a1a1a;
+      border-left: 3px solid #555;
+      border-radius: 0 6px 6px 0;
+      padding: 10px 12px;
+      animation: slideIn 0.2s ease;
+    }
+    .alert-item.CRYING    { border-color: #e53935; }
+    .alert-item.TEMP_HIGH { border-color: #ff6d00; }
+    .alert-item.TEMP_LOW  { border-color: #1e88e5; }
+    .alert-item.MOVEMENT  { border-color: #fdd835; }
+
+    .alert-type {
+      font-size: 10px;
+      letter-spacing: 1px;
+      font-weight: bold;
+      margin-bottom: 3px;
+    }
+    .alert-item.CRYING    .alert-type { color: #e57373; }
+    .alert-item.TEMP_HIGH .alert-type { color: #ff8a65; }
+    .alert-item.TEMP_LOW  .alert-type { color: #64b5f6; }
+    .alert-item.MOVEMENT  .alert-type { color: #fff176; }
+
+    .alert-msg  { font-size: 12px; color: #ccc; }
+    .alert-time { font-size: 10px; color: #555; margin-top: 4px; }
+
+    #noAlerts {
+      font-size: 12px;
+      color: #444;
+      text-align: center;
+      padding: 24px 0;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Reconnect banner ── */
+    #reconnectBanner {
+      display: none;
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: #b71c1c;
+      color: #fff;
+      text-align: center;
+      padding: 10px;
+      font-size: 12px;
+      letter-spacing: 1px;
+      z-index: 99;
+    }
+    #reconnectBanner.visible { display: block; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>BABY MONITOR</h1>
+    <div id="wsIndicator">
+      <div id="wsDot"></div>
+      <span id="wsLabel">Connecting...</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Camera feed -->
+    <section id="cameraPanel">
+      <div id="feedWrapper">
+        <img id="feed" alt="live feed">
+        <div id="feedOverlay">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M15 10l4.553-2.069A1 1 0 0121 8.867V15.133a1 1 0 01-1.447.936L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+          </svg>
+          <span id="overlayText">Camera off</span>
+        </div>
+      </div>
+      <div id="cameraControls">
+        <button id="toggleBtn">TURN ON</button>
+        <span id="streamStatus">Stream inactive</span>
+      </div>
+    </section>
+
+    <!-- Alerts -->
+    <section id="alertsPanel">
+      <h2>RECENT ALERTS</h2>
+      <div id="alertList">
+        <div id="noAlerts">No alerts yet</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="reconnectBanner">Connection lost — reconnecting...</div>
+
+  <script>
+    const feedEl        = document.getElementById('feed')
+    const feedOverlay   = document.getElementById('feedOverlay')
+    const overlayText   = document.getElementById('overlayText')
+    const toggleBtn     = document.getElementById('toggleBtn')
+    const streamStatus  = document.getElementById('streamStatus')
+    const alertList     = document.getElementById('alertList')
+    const noAlerts      = document.getElementById('noAlerts')
+    const wsDot         = document.getElementById('wsDot')
+    const wsLabel       = document.getElementById('wsLabel')
+    const reconnBanner  = document.getElementById('reconnectBanner')
+
+    let cameraOn = false
+    let ws       = null
+
+    // ── Camera toggle — only manual turn-off is allowed from the button ─────
+    toggleBtn.addEventListener('click', async () => {
+      if (!cameraOn) return   // button does nothing when stream is already off
+      toggleBtn.disabled = true
+      try {
+        const r = await fetch('/api/stop', { method: 'POST' })
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      } catch (e) {
+        console.error('Stop failed:', e)
+      } finally {
+        toggleBtn.disabled = false
+      }
+    })
+
+    // ── Apply streaming state ─────────────────────────────────────────────────
+    function applyState(streaming) {
+      cameraOn = streaming
+      toggleBtn.textContent = cameraOn ? 'TURN OFF' : 'TURN ON'
+      toggleBtn.classList.toggle('off', cameraOn)
+      if (!cameraOn) {
+        feedEl.style.display  = 'none'
+        feedOverlay.style.display = 'flex'
+        overlayText.textContent   = 'Camera off'
+        streamStatus.textContent  = 'Stream inactive'
+        streamStatus.className    = ''
+      }
+    }
+
+    // ── Alert rendering ───────────────────────────────────────────────────────
+    const ALERT_LABELS = {
+      CRYING:    'Baby Crying',
+      TEMP_HIGH: 'Temperature High',
+      TEMP_LOW:  'Temperature Low',
+      MOVEMENT:  'Movement Detected',
+    }
+
+    function renderAlert(alert) {
+      noAlerts.style.display = 'none'
+      const item = document.createElement('div')
+      item.className = `alert-item ${alert.type}`
+
+      const t = new Date(alert.timestamp)
+      const timeStr = t.toLocaleTimeString()
+
+      item.innerHTML = `
+        <div class="alert-type">${ALERT_LABELS[alert.type] || alert.type}</div>
+        <div class="alert-msg">${alert.message}</div>
+        <div class="alert-time">${timeStr}</div>
+      `
+      alertList.prepend(item)
+
+      // Keep list trimmed to 20 visible items
+      const items = alertList.querySelectorAll('.alert-item')
+      if (items.length > 20) items[items.length - 1].remove()
+    }
+
+    function loadHistory(history) {
+      if (!history || history.length === 0) return
+      noAlerts.style.display = 'none'
+      // History is newest-first; render in order so the DOM ends up newest-first too.
+      for (const alert of history.slice(0, 20)) renderAlert(alert)
+    }
+
+    // ── WebSocket ─────────────────────────────────────────────────────────────
+    function connect() {
+      ws = new WebSocket(`ws://${location.host}`)
+
+      ws.onopen = () => {
+        wsDot.className   = 'connected'
+        wsLabel.textContent = 'Connected'
+        reconnBanner.classList.remove('visible')
+      }
+
+      ws.onmessage = (e) => {
+        let msg
+        try { msg = JSON.parse(e.data) } catch (_) { return }
+
+        if (msg.type === 'frame') {
+          feedEl.src            = 'data:image/jpeg;base64,' + msg.data
+          feedEl.style.display  = 'block'
+          feedOverlay.style.display = 'none'
+          streamStatus.textContent  = 'LIVE'
+          streamStatus.className    = 'live'
+
+        } else if (msg.type === 'state') {
+          applyState(msg.streaming)
+
+        } else if (msg.type === 'history') {
+          loadHistory(msg.alerts)
+
+        } else if (msg.type === 'alert') {
+          renderAlert(msg.alert)
+        }
+      }
+
+      ws.onclose = () => {
+        wsDot.className     = 'disconnected'
+        wsLabel.textContent = 'Disconnected'
+        reconnBanner.classList.add('visible')
+        // Reconnect after 3 seconds
+        setTimeout(connect, 3000)
+      }
+
+      ws.onerror = () => ws.close()
+    }
+
+    connect()
+  </script>
+</body>
+</html>

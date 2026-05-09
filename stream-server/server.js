@@ -1,0 +1,158 @@
+'use strict'
+
+const http    = require('http')
+const express = require('express')
+const { WebSocketServer } = require('ws')
+const path    = require('path')
+const config  = require('./config')
+
+const app    = express()
+const server = http.createServer(app)
+const wss    = new WebSocketServer({ server })
+
+// ── In-memory state ──────────────────────────────────────────────────────────
+let streaming    = false
+let latestFrame  = null       // Buffer | null — most recent JPEG from ESP32
+const alerts     = []         // newest first, capped at MAX_ALERTS
+const MAX_ALERTS = 50
+let alertCounter = 0
+
+const mjpegClients = new Set()    // active GET /api/stream response objects
+const wsClients    = new Set()    // active browser WebSocket connections
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function broadcast(obj) {
+    const msg = JSON.stringify(obj)
+    for (const ws of wsClients) {
+        if (ws.readyState === 1) ws.send(msg)
+    }
+}
+
+// Middleware: ESP32 must send x-device-key header matching config.
+function requireKey(req, res, next) {
+    if (req.headers['x-device-key'] !== config.DEVICE_KEY) {
+        return res.status(401).json({ error: 'Unauthorized' })
+    }
+    next()
+}
+
+function pushFrameToMjpeg(buf) {
+    if (mjpegClients.size === 0) return
+    const header = `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`
+    for (const res of mjpegClients) {
+        try {
+            res.write(header)
+            res.write(buf)
+            res.write('\r\n')
+        } catch (_) {
+            mjpegClients.delete(res)
+        }
+    }
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+wss.on('connection', (ws) => {
+    wsClients.add(ws)
+    // Sync new client immediately — no need for it to poll.
+    ws.send(JSON.stringify({ type: 'state', streaming }))
+    ws.send(JSON.stringify({ type: 'history', alerts }))
+    ws.on('close', () => wsClients.delete(ws))
+    ws.on('error', () => wsClients.delete(ws))
+})
+
+// ── Body parsers (must be registered before routes) ──────────────────────────
+app.use('/api/frame',  express.raw({ type: 'image/jpeg', limit: '300kb' }))
+app.use('/api/alerts', express.json({ limit: '8kb' }))
+app.use(express.json({ limit: '8kb' }))
+
+// ── Static ───────────────────────────────────────────────────────────────────
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')))
+
+// ── Camera control (browser → server) ───────────────────────────────────────
+// ESP32 polls /api/status to decide whether to capture and upload frames.
+app.get('/api/status', (_req, res) => res.send(streaming ? '1' : '0'))
+
+app.post('/api/start', (_req, res) => {
+    streaming = true
+    broadcast({ type: 'state', streaming })
+    console.log(`[${new Date().toISOString()}] Streaming started`)
+    res.json({ streaming })
+})
+
+app.post('/api/stop', (_req, res) => {
+    streaming = false
+    broadcast({ type: 'state', streaming })
+    console.log(`[${new Date().toISOString()}] Streaming stopped`)
+    res.json({ streaming })
+})
+
+// ── Frame upload (ESP32 → server) ────────────────────────────────────────────
+app.post('/api/frame', requireKey, (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'Empty or invalid frame body' })
+    }
+    latestFrame = req.body
+    pushFrameToMjpeg(latestFrame)
+    broadcast({ type: 'frame', data: latestFrame.toString('base64') })
+    res.sendStatus(200)
+})
+
+// ── MJPEG stream (browser / external client → server) ────────────────────────
+// Any HTTP client can open GET /api/stream for a live MJPEG feed.
+// The connection is kept alive; new frames are pushed as they arrive.
+app.get('/api/stream', (req, res) => {
+    res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+    res.setHeader('Cache-Control', 'no-cache, no-store')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+
+    if (latestFrame) {
+        res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${latestFrame.length}\r\n\r\n`)
+        res.write(latestFrame)
+        res.write('\r\n')
+    }
+
+    mjpegClients.add(res)
+    req.on('close', () => mjpegClients.delete(res))
+})
+
+// ── Alerts (ESP32 → server) ──────────────────────────────────────────────────
+app.post('/api/alerts', requireKey, (req, res) => {
+    const { device_id, type, message } = req.body || {}
+    if (!type) {
+        return res.status(400).json({ error: 'Missing required field: type' })
+    }
+
+    const alert = {
+        id:        ++alertCounter,
+        device_id: String(device_id || 'unknown'),
+        type:      String(type).toUpperCase(),
+        message:   String(message || type),
+        timestamp: new Date().toISOString(),
+    }
+
+    alerts.unshift(alert)
+    if (alerts.length > MAX_ALERTS) alerts.pop()
+
+    // Auto-start the live stream when any alert fires.
+    if (!streaming) {
+        streaming = true
+        broadcast({ type: 'state', streaming })
+        console.log(`[${alert.timestamp}] Stream auto-started by alert`)
+    }
+
+    broadcast({ type: 'alert', alert })
+    console.log(`[${alert.timestamp}] ALERT ${alert.type} — ${alert.message}`)
+    res.status(201).json(alert)
+})
+
+// ── Recent alerts (browser → server) ────────────────────────────────────────
+app.get('/api/alerts', (_req, res) => res.json(alerts))
+
+// ── Start ────────────────────────────────────────────────────────────────────
+server.listen(config.PORT, '0.0.0.0', () => {
+    console.log(`\nBaby Monitor backend on http://localhost:${config.PORT}`)
+    console.log(`Dashboard:   http://localhost:${config.PORT}/`)
+    console.log(`MJPEG stream: http://localhost:${config.PORT}/api/stream`)
+    console.log(`Device key:  ${config.DEVICE_KEY}\n`)
+})
