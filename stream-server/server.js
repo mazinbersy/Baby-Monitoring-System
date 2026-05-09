@@ -134,6 +134,13 @@ app.post('/api/alerts', requireKey, (req, res) => {
     alerts.unshift(alert)
     if (alerts.length > MAX_ALERTS) alerts.pop()
 
+    // Auto-start the live stream when any alert fires.
+    if (!streaming) {
+        streaming = true
+        broadcast({ type: 'state', streaming })
+        console.log(`[${alert.timestamp}] Stream auto-started by alert`)
+    }
+
     broadcast({ type: 'alert', alert })
     console.log(`[${alert.timestamp}] ALERT ${alert.type} — ${alert.message}`)
     res.status(201).json(alert)

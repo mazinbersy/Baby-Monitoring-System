@@ -239,16 +239,15 @@
     let cameraOn = false
     let ws       = null
 
-    // ── Camera toggle ────────────────────────────────────────────────────────
+    // ── Camera toggle — only manual turn-off is allowed from the button ─────
     toggleBtn.addEventListener('click', async () => {
+      if (!cameraOn) return   // button does nothing when stream is already off
       toggleBtn.disabled = true
       try {
-        const endpoint = cameraOn ? '/api/stop' : '/api/start'
-        const r = await fetch(endpoint, { method: 'POST' })
+        const r = await fetch('/api/stop', { method: 'POST' })
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        // State will be confirmed via the 'state' WebSocket message.
       } catch (e) {
-        console.error('Toggle failed:', e)
+        console.error('Stop failed:', e)
       } finally {
         toggleBtn.disabled = false
       }

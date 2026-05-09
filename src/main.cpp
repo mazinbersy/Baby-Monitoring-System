@@ -12,12 +12,13 @@
 #define DEVICE_KEY   "bms-secret-key-2024"       // must match server config.js
 
 // ─── UART (Nucleo-L432KC → ESP32-CAM) ────────────────────────────────────────
-//   Nucleo TX (e.g. PA2)  →  ESP32-CAM GPIO 13  (UART2 RX)
-//   ESP32-CAM GND         →  Nucleo GND          (common ground — required)
+//   Nucleo TX  →  ESP32-CAM GPIO 13  (UART2 RX)
+//   ESP32-CAM GND  →  Nucleo GND     (common ground — required)
 //   Both boards run at 3.3 V logic, no level-shifter needed.
+//   NOTE: GPIO 16 cannot be used — it is the PSRAM chip-select on ESP32-CAM.
 #define NUCLEO_RX_PIN  13
-#define NUCLEO_TX_PIN  15    // direction unused; Serial2 still needs both params
-#define NUCLEO_BAUD    9600
+#define NUCLEO_TX_PIN  -1    // TX not used; -1 disables the pin
+#define NUCLEO_BAUD    115200
 
 // ─── Camera pin map (AI-Thinker ESP32-CAM) ───────────────────────────────────
 #define PWDN_GPIO_NUM   32
@@ -98,16 +99,18 @@ static void sendAlert(const char* type, const char* message) {
 static void dispatchLine(const char* line) {
     Serial.printf("[UART] <- %s\n", line);
 
-    if      (strcmp(line, "ALERT:CRYING")   == 0) sendAlert("CRYING",    "Baby crying detected");
-    else if (strcmp(line, "ALERT:TEMP_HIGH") == 0) sendAlert("TEMP_HIGH", "Temperature too high");
-    else if (strcmp(line, "ALERT:TEMP_LOW")  == 0) sendAlert("TEMP_LOW",  "Temperature too low");
-    else if (strcmp(line, "ALERT:MOVEMENT")  == 0) sendAlert("MOVEMENT",  "Unexpected movement detected");
-    else Serial.printf("[UART] Unknown message: %s\n", line);
+    if      (strcmp(line, "CRY") == 0) sendAlert("CRYING",   "Baby crying detected");
+    // Add more codes here as the Nucleo firmware implements them:
+    // else if (strcmp(line, "HOT") == 0) sendAlert("TEMP_HIGH", "Temperature too high");
+    // else if (strcmp(line, "CLD") == 0) sendAlert("TEMP_LOW",  "Temperature too low");
+    // else if (strcmp(line, "MOV") == 0) sendAlert("MOVEMENT",  "Unexpected movement detected");
+    else Serial.printf("[UART] Unknown code: %s\n", line);
 }
 
 static void pollUart() {
     while (Serial2.available()) {
         char c = (char)Serial2.read();
+        Serial.printf("[UART] raw byte: 0x%02X ('%c')\n", (uint8_t)c, c >= 32 ? c : '?');
         if (c == '\n' || c == '\r') {
             if (s_uartPos > 0) {
                 s_uartBuf[s_uartPos] = '\0';
@@ -120,7 +123,6 @@ static void pollUart() {
         } else if (s_uartPos < (int)sizeof(s_uartBuf) - 1) {
             s_uartBuf[s_uartPos++] = c;
         }
-        // Silently discard any byte that would overflow the buffer.
     }
 }
 
