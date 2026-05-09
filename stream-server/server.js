@@ -5,10 +5,12 @@ const express = require('express')
 const { WebSocketServer } = require('ws')
 const path    = require('path')
 const config  = require('./config')
+const { Expo } = require('expo-server-sdk')
 
 const app    = express()
 const server = http.createServer(app)
 const wss    = new WebSocketServer({ server })
+const expo   = new Expo()
 
 // ── In-memory state ──────────────────────────────────────────────────────────
 let streaming    = false
@@ -17,6 +19,7 @@ const alerts     = []         // newest first, capped at MAX_ALERTS
 const MAX_ALERTS = 50
 let alertCounter = 0
 
+const pushTokens   = new Set()        // registered Expo push tokens from mobile app
 const mjpegClients = new Set()    // active GET /api/stream response objects
 const wsClients    = new Set()    // active browser WebSocket connections
 
@@ -59,6 +62,33 @@ wss.on('connection', (ws) => {
     ws.on('close', () => wsClients.delete(ws))
     ws.on('error', () => wsClients.delete(ws))
 })
+
+// ── Push notification helper ─────────────────────────────────────────────────
+async function sendPushNotifications(alert) {
+    if (pushTokens.size === 0) return
+    const messages = []
+    for (const token of pushTokens) {
+        if (!Expo.isExpoPushToken(token)) continue
+        messages.push({
+            to:    token,
+            sound: 'default',
+            title: `Baby Alert: ${alert.type}`,
+            body:  alert.message,
+            data:  { alert },
+        })
+    }
+    const chunks = expo.chunkPushNotifications(messages)
+    for (const chunk of chunks) {
+        try {
+            const receipts = await expo.sendPushNotificationsAsync(chunk)
+            receipts.forEach(r => {
+                if (r.status === 'error') console.error('[Push] Error:', r.message)
+            })
+        } catch (err) {
+            console.error('[Push] Send failed:', err.message)
+        }
+    }
+}
 
 // ── Body parsers (must be registered before routes) ──────────────────────────
 app.use('/api/frame',  express.raw({ type: 'image/jpeg', limit: '300kb' }))
@@ -117,7 +147,7 @@ app.get('/api/stream', (req, res) => {
 })
 
 // ── Alerts (ESP32 → server) ──────────────────────────────────────────────────
-app.post('/api/alerts', requireKey, (req, res) => {
+app.post('/api/alerts', requireKey, async (req, res) => {
     const { device_id, type, message } = req.body || {}
     if (!type) {
         return res.status(400).json({ error: 'Missing required field: type' })
@@ -142,12 +172,24 @@ app.post('/api/alerts', requireKey, (req, res) => {
     }
 
     broadcast({ type: 'alert', alert })
+    sendPushNotifications(alert).catch(err => console.error('[Push]', err.message))
     console.log(`[${alert.timestamp}] ALERT ${alert.type} — ${alert.message}`)
     res.status(201).json(alert)
 })
 
 // ── Recent alerts (browser → server) ────────────────────────────────────────
 app.get('/api/alerts', (_req, res) => res.json(alerts))
+
+// ── Mobile push token registration ───────────────────────────────────────────
+app.post('/api/register-token', (req, res) => {
+    const { token } = req.body || {}
+    if (!token || !Expo.isExpoPushToken(token)) {
+        return res.status(400).json({ error: 'Invalid Expo push token' })
+    }
+    pushTokens.add(token)
+    console.log(`[Push] Token registered (total: ${pushTokens.size})`)
+    res.json({ ok: true })
+})
 
 // ── Start ────────────────────────────────────────────────────────────────────
 server.listen(config.PORT, '0.0.0.0', () => {

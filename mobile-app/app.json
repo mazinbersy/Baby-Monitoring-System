@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Baby Monitor",
+    "slug": "hows-my-baby",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.babymonitor.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Needed to display the baby camera stream."
+      }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#22c55e"
+        }
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "d3f93757-48ae-4c13-aa85-1b1bb5baef2f"
+      }
+    },
+    "owner": "babymonitor"
+  }
+}
