@@ -26,6 +26,7 @@ export default function App() {
     const [alerts,     setAlerts]     = useState([])
     const [streaming,  setStreaming]  = useState(false)
     const [connected,  setConnected]  = useState(false)
+    const [mode,   setMode] = useState('SLEEP_OFF')
     const wsRef = useRef(null)
 
     const connectWebSocket = useCallback(() => {
@@ -48,8 +49,12 @@ export default function App() {
                 if (!msg.streaming) setFrameUri(null)
             } else if (msg.type === 'alert') {
                 setAlerts(prev => [msg.alert, ...prev].slice(0, 50))
+                // App is in foreground — start stream so parent sees it immediately
+                fetch(`${SERVER_URL}/api/start`, { method: 'POST' }).catch(() => {})
             } else if (msg.type === 'history') {
                 setAlerts(msg.alerts)
+            } else if (msg.type === 'mode') {
+                setMode(msg.mode)
             }
         }
     }, [])
@@ -57,7 +62,16 @@ export default function App() {
     useEffect(() => {
         registerForPushNotifications()
         connectWebSocket()
-        return () => wsRef.current?.close()
+
+        // App opened by tapping a notification — start the stream
+        const sub = Notifications.addNotificationResponseReceivedListener(() => {
+            fetch(`${SERVER_URL}/api/start`, { method: 'POST' }).catch(() => {})
+        })
+
+        return () => {
+            wsRef.current?.close()
+            sub.remove()
+        }
     }, [connectWebSocket])
 
     async function registerForPushNotifications() {
@@ -97,10 +111,27 @@ export default function App() {
         }
     }
 
+    async function setModeCmd(newMode) {
+        setMode(newMode)  // optimistic update — UI responds instantly
+        console.log('[Mode] Sending to server:', newMode)
+        try {
+            await fetch(`${SERVER_URL}/api/mode`, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ mode: newMode }),
+            })
+        } catch (err) {
+            console.warn('[Mode] Set failed:', err.message)
+        }
+    }
+
     const alertColor = (type) => {
-        if (type === 'CRYING')   return '#e74c3c'
+        if (type === 'CRYING')     return '#e74c3c'
+        if (type === 'NO_MOTION')  return '#f59e0b'
+        if (type === 'BABY_AWAKE') return '#22c55e'
+        if (type === 'DOOR_CROSS') return '#a855f7'
         if (type.includes('TEMP')) return '#e67e22'
-        if (type === 'MOVEMENT') return '#3498db'
+        if (type === 'MOVEMENT')   return '#3498db'
         return '#95a5a6'
     }
 
@@ -137,6 +168,23 @@ export default function App() {
             >
                 <Text style={styles.buttonText}>{streaming ? 'Stop Stream' : 'Start Stream'}</Text>
             </TouchableOpacity>
+
+            {/* Baby mode */}
+            <Text style={styles.sectionTitle}>Baby Status</Text>
+            <View style={styles.modeRow}>
+                <TouchableOpacity
+                    style={[styles.modeButton, mode === 'SLEEP_OFF' && styles.modeButtonAwake]}
+                    onPress={() => setModeCmd('SLEEP_OFF')}
+                >
+                    <Text style={styles.modeButtonText}>Baby is Awake</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    style={[styles.modeButton, mode === 'SLEEP_ON' && styles.modeButtonAsleep]}
+                    onPress={() => setModeCmd('SLEEP_ON')}
+                >
+                    <Text style={styles.modeButtonText}>Baby is Asleep</Text>
+                </TouchableOpacity>
+            </View>
 
             {/* Alert list */}
             <Text style={styles.sectionTitle}>Recent Alerts</Text>
@@ -201,6 +249,14 @@ const styles = StyleSheet.create({
     alertTime:         { color: '#64748b', fontSize: 12 },
     alertMessage:      { color: '#cbd5e1', fontSize: 13 },
     empty:             { color: '#475569', textAlign: 'center', marginTop: 20 },
+    modeRow:           { flexDirection: 'row', marginHorizontal: 16, marginBottom: 4, gap: 8 },
+    modeButton:        {
+        flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center',
+        backgroundColor: '#1e293b', borderWidth: 2, borderColor: '#334155',
+    },
+    modeButtonAwake:   { borderColor: '#22c55e', backgroundColor: '#052e16' },
+    modeButtonAsleep:  { borderColor: '#6366f1', backgroundColor: '#1e1b4b' },
+    modeButtonText:    { color: '#f1f5f9', fontWeight: '600', fontSize: 14 },
 })
 
 registerRootComponent(App)

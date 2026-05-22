@@ -18,6 +18,7 @@ let latestFrame  = null       // Buffer | null — most recent JPEG from ESP32
 const alerts     = []         // newest first, capped at MAX_ALERTS
 const MAX_ALERTS = 50
 let alertCounter = 0
+let currentMode  = 'SLEEP_OFF' // 'SLEEP_ON' (baby asleep) | 'SLEEP_OFF' (baby awake)
 
 const pushTokens   = new Set()        // registered Expo push tokens from mobile app
 const mjpegClients = new Set()    // active GET /api/stream response objects
@@ -59,6 +60,7 @@ wss.on('connection', (ws) => {
     // Sync new client immediately — no need for it to poll.
     ws.send(JSON.stringify({ type: 'state', streaming }))
     ws.send(JSON.stringify({ type: 'history', alerts }))
+    ws.send(JSON.stringify({ type: 'mode', mode: currentMode }))
     ws.on('close', () => wsClients.delete(ws))
     ws.on('error', () => wsClients.delete(ws))
 })
@@ -116,6 +118,21 @@ app.post('/api/stop', (_req, res) => {
     res.json({ streaming })
 })
 
+// ── Baby mode (mobile app → server → ESP32 polls → Nucleo UART) ─────────────
+// ESP32 polls GET /api/mode; mobile app sets via POST /api/mode.
+app.get('/api/mode', (_req, res) => res.send(currentMode))
+
+app.post('/api/mode', (req, res) => {
+    const { mode } = req.body || {}
+    if (mode !== 'SLEEP_ON' && mode !== 'SLEEP_OFF') {
+        return res.status(400).json({ error: 'mode must be SLEEP_ON or SLEEP_OFF' })
+    }
+    currentMode = mode
+    broadcast({ type: 'mode', mode: currentMode })
+    console.log(`[${new Date().toISOString()}] Baby mode -> ${currentMode}`)
+    res.json({ mode: currentMode })
+})
+
 // ── Frame upload (ESP32 → server) ────────────────────────────────────────────
 app.post('/api/frame', requireKey, (req, res) => {
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
@@ -163,13 +180,6 @@ app.post('/api/alerts', requireKey, async (req, res) => {
 
     alerts.unshift(alert)
     if (alerts.length > MAX_ALERTS) alerts.pop()
-
-    // Auto-start the live stream when any alert fires.
-    if (!streaming) {
-        streaming = true
-        broadcast({ type: 'state', streaming })
-        console.log(`[${alert.timestamp}] Stream auto-started by alert`)
-    }
 
     broadcast({ type: 'alert', alert })
     sendPushNotifications(alert).catch(err => console.error('[Push]', err.message))

@@ -6,7 +6,7 @@
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 // Edit these four values; everything else is derived from them.
-#define WIFI_SSID    "iPhone"
+#define WIFI_SSID    "Mazin"
 #define WIFI_PASS    "12345678"
 #define SERVER_BASE  "https://baby-monitoring-system-production.up.railway.app"
 #define DEVICE_ID    "baby_monitor_1"
@@ -18,7 +18,7 @@
 //   Both boards run at 3.3 V logic, no level-shifter needed.
 //   NOTE: GPIO 16 cannot be used — it is the PSRAM chip-select on ESP32-CAM.
 #define NUCLEO_RX_PIN  13
-#define NUCLEO_TX_PIN  -1    // TX not used; -1 disables the pin
+#define NUCLEO_TX_PIN  14    // TX → Nucleo UART2 RX (forward SLEEP_ON / SLEEP_OFF commands)
 #define NUCLEO_BAUD    115200
 
 // ─── Camera pin map (AI-Thinker ESP32-CAM) ───────────────────────────────────
@@ -42,11 +42,14 @@
 // ─── Timing ───────────────────────────────────────────────────────────────────
 static const unsigned long STATUS_INTERVAL_MS = 2000;
 static const unsigned long WIFI_RETRY_MS      = 5000;
+static const unsigned long MODE_POLL_MS       = 3000;
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 static bool          s_streaming       = false;
 static unsigned long s_lastStatusMs    = 0;
 static unsigned long s_lastWifiRetryMs = 0;
+static unsigned long s_lastModePollMs  = 0;
+static char          s_lastMode[16]    = "";  // last mode forwarded to Nucleo
 
 // Persistent HTTPS client for frame uploads — avoids TLS handshake on every frame
 static WiFiClientSecure s_frameClient;
@@ -102,20 +105,34 @@ static void sendAlert(const char* type, const char* message) {
 
 // ─── UART parsing ─────────────────────────────────────────────────────────────
 
+static void reportModeChange(const char* mode) {
+    // Update s_lastMode first so pollMode() doesn't echo the same value back to the STM32
+    strncpy(s_lastMode, mode, sizeof(s_lastMode) - 1);
+    s_lastMode[sizeof(s_lastMode) - 1] = '\0';
+
+    String body = "{\"mode\":\"";
+    body += mode;
+    body += "\"}";
+    int code = postJson("/api/mode", body);
+    Serial.printf("[Mode] STM32 auto -> %s (HTTP %d)\n", mode, code);
+}
+
 static void dispatchLine(const char* line) {
     Serial.printf("[UART] <- %s\n", line);
 
-    if      (strstr(line, "CRY") != NULL) sendAlert("CRYING",   "Baby crying detected");
-    // else if (strstr(line, "HOT") != NULL) sendAlert("TEMP_HIGH", "Temperature too high");
-    // else if (strstr(line, "CLD") != NULL) sendAlert("TEMP_LOW",  "Temperature too low");
-    // else if (strstr(line, "MOV") != NULL) sendAlert("MOVEMENT",  "Unexpected movement detected");
-    else Serial.printf("[UART] Unknown code: %s\n", line);
+    if      (strcmp(line, "CRY")   == 0) { sendAlert("CRYING",     "Baby crying detected"); }
+    else if (strcmp(line, "NOMOV") == 0) { sendAlert("NO_MOTION",  "No motion for 5 min - is baby awake?"); }
+    else if (strcmp(line, "DOOR")  == 0) { sendAlert("DOOR_CROSS", "Baby may be leaving room"); }
+    else if (strcmp(line, "AWAKE") == 0) { reportModeChange("SLEEP_OFF"); sendAlert("BABY_AWAKE", "Baby woke up!"); }
+    else if (strcmp(line, "MSLP")  == 0) { reportModeChange("SLEEP_ON"); }
+    // else if (strcmp(line, "HOT")  == 0) sendAlert("TEMP_HIGH",  "Temperature too high");
+    // else if (strcmp(line, "CLD")  == 0) sendAlert("TEMP_LOW",   "Temperature too low");
+    // else if (strcmp(line, "MOV")  == 0) sendAlert("MOVEMENT",   "Unexpected movement detected");
 }
 
 static void pollUart() {
     while (Serial2.available()) {
         char c = (char)Serial2.read();
-        Serial.printf("[UART] raw byte: 0x%02X ('%c')\n", (uint8_t)c, c >= 32 ? c : '?');
         if (c == '\n' || c == '\r') {
             if (s_uartPos > 0) {
                 s_uartBuf[s_uartPos] = '\0';
@@ -152,6 +169,38 @@ static void pollStatus() {
             s_streaming = newState;
             Serial.println(s_streaming ? "[Cam] Streaming ON" : "[Cam] Streaming OFF");
         }
+    }
+    h.end();
+}
+
+// ─── Mode polling (server → ESP32 → Nucleo UART) ─────────────────────────────
+// Parent sets baby awake/asleep in the app → server stores mode →
+// ESP32 polls /api/mode and forwards SLEEP_ON or SLEEP_OFF to Nucleo via UART2 TX.
+
+static void pollMode() {
+    if (!wifiUp()) return;
+    unsigned long now = millis();
+    if (now - s_lastModePollMs < MODE_POLL_MS) return;
+    s_lastModePollMs = now;
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient h;
+    h.begin(client, String(SERVER_BASE) + "/api/mode");
+    h.setTimeout(3000);
+    int code = h.GET();
+    if (code == 200) {
+        String mode = h.getString();
+        mode.trim();
+        if (mode.length() > 0 && mode != String(s_lastMode)) {
+            mode.toCharArray(s_lastMode, sizeof(s_lastMode));
+            Serial2.print(mode + "\n");
+            Serial.printf("[Mode] -> Nucleo: %s\n", s_lastMode);
+        } else {
+            Serial.printf("[Mode] No change (%s)\n", s_lastMode);
+        }
+    } else {
+        Serial.printf("[Mode] Poll failed: HTTP %d\n", code);
     }
     h.end();
 }
@@ -251,5 +300,6 @@ void loop() {
     ensureWifi();        // reconnect if dropped
     pollUart();          // read Nucleo alert strings (non-blocking)
     pollStatus();        // ask server whether streaming is requested
+    pollMode();          // forward parent's awake/asleep command to Nucleo
     captureAndSend();    // upload one frame if streaming is active
 }
