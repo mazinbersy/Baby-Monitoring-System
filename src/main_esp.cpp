@@ -4,24 +4,19 @@
 #include "HTTPClient.h"
 #include "WiFiClientSecure.h"
 
-// ─── Configuration ────────────────────────────────────────────────────────────
-// Edit these four values; everything else is derived from them.
+// wifi and server settings
 #define WIFI_SSID    "Mazin"
 #define WIFI_PASS    "12345678"
 #define SERVER_BASE  "https://baby-monitoring-system-production.up.railway.app"
 #define DEVICE_ID    "baby_monitor_1"
-#define DEVICE_KEY   "bms-secret-key-2024"       // must match server config.js
+#define DEVICE_KEY   "bms-secret-key-2024"
 
-// ─── UART (Nucleo-L432KC → ESP32-CAM) ────────────────────────────────────────
-//   Nucleo TX  →  ESP32-CAM GPIO 13  (UART2 RX)
-//   ESP32-CAM GND  →  Nucleo GND     (common ground — required)
-//   Both boards run at 3.3 V logic, no level-shifter needed.
-//   NOTE: GPIO 16 cannot be used — it is the PSRAM chip-select on ESP32-CAM.
+// UART to nucleo (GPIO16 can't be used on ESP32-CAM)
 #define NUCLEO_RX_PIN  13
-#define NUCLEO_TX_PIN  14    // TX → Nucleo UART2 RX (forward SLEEP_ON / SLEEP_OFF commands)
+#define NUCLEO_TX_PIN  14
 #define NUCLEO_BAUD    115200
 
-// ─── Camera pin map (AI-Thinker ESP32-CAM) ───────────────────────────────────
+// camera pins for AI-Thinker ESP32-CAM
 #define PWDN_GPIO_NUM   32
 #define RESET_GPIO_NUM  -1
 #define XCLK_GPIO_NUM    0
@@ -39,26 +34,22 @@
 #define HREF_GPIO_NUM   23
 #define PCLK_GPIO_NUM   22
 
-// ─── Timing ───────────────────────────────────────────────────────────────────
 static const unsigned long STATUS_INTERVAL_MS = 2000;
 static const unsigned long WIFI_RETRY_MS      = 5000;
 static const unsigned long MODE_POLL_MS       = 3000;
 
-// ─── Runtime state ────────────────────────────────────────────────────────────
 static bool          s_streaming       = false;
 static unsigned long s_lastStatusMs    = 0;
 static unsigned long s_lastWifiRetryMs = 0;
 static unsigned long s_lastModePollMs  = 0;
-static char          s_lastMode[16]    = "";  // last mode forwarded to Nucleo
+static char          s_lastMode[16]    = "";
 
-// Persistent HTTPS client for frame uploads — avoids TLS handshake on every frame
+// reuse HTTPS client for frame uploads
 static WiFiClientSecure s_frameClient;
 
-// ─── UART line buffer ─────────────────────────────────────────────────────────
+// buffer for nucleo UART messages
 static char s_uartBuf[64];
 static int  s_uartPos = 0;
-
-// ─── WiFi helpers ─────────────────────────────────────────────────────────────
 
 static bool wifiUp() { return WiFi.status() == WL_CONNECTED; }
 
@@ -71,8 +62,6 @@ static void ensureWifi() {
     WiFi.disconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
-
-// ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 static int postJson(const char* path, const String& body) {
     WiFiClientSecure client;
@@ -88,7 +77,6 @@ static int postJson(const char* path, const String& body) {
 }
 
 static void sendAlert(const char* type, const char* message) {
-    // Build JSON manually — no extra library needed.
     String body;
     body.reserve(128);
     body  = "{\"device_id\":\"";  body += DEVICE_ID;
@@ -103,10 +91,8 @@ static void sendAlert(const char* type, const char* message) {
         Serial.printf("[Alert] Sent %s\n", type);
 }
 
-// ─── UART parsing ─────────────────────────────────────────────────────────────
-
 static void reportModeChange(const char* mode) {
-    // Update s_lastMode first so pollMode() doesn't echo the same value back to the STM32
+    // update lastMode first so pollMode doesn't echo it back to nucleo
     strncpy(s_lastMode, mode, sizeof(s_lastMode) - 1);
     s_lastMode[sizeof(s_lastMode) - 1] = '\0';
 
@@ -146,8 +132,6 @@ static void pollUart() {
     }
 }
 
-// ─── Status polling ───────────────────────────────────────────────────────────
-
 static void pollStatus() {
     if (!wifiUp()) return;
     unsigned long now = millis();
@@ -171,10 +155,7 @@ static void pollStatus() {
     h.end();
 }
 
-// ─── Mode polling (server → ESP32 → Nucleo UART) ─────────────────────────────
-// Parent sets baby awake/asleep in the app → server stores mode →
-// ESP32 polls /api/mode and forwards SLEEP_ON or SLEEP_OFF to Nucleo via UART2 TX.
-
+// poll for mode changes from the app and forward to nucleo
 static void pollMode() {
     if (!wifiUp()) return;
     unsigned long now = millis();
@@ -203,8 +184,6 @@ static void pollMode() {
     h.end();
 }
 
-// ─── Frame capture & upload ───────────────────────────────────────────────────
-
 static void captureAndSend() {
     if (!s_streaming || !wifiUp()) return;
 
@@ -224,8 +203,6 @@ static void captureAndSend() {
 
     esp_camera_fb_return(fb);
 }
-
-// ─── Camera init ──────────────────────────────────────────────────────────────
 
 static bool initCamera() {
     camera_config_t cfg = {};
@@ -257,12 +234,10 @@ static bool initCamera() {
     return esp_camera_init(&cfg) == ESP_OK;
 }
 
-// ─── Setup ────────────────────────────────────────────────────────────────────
-
 void setup() {
     Serial.begin(115200);
 
-    // UART2 — receive alert strings from Nucleo
+    // UART to nucleo
     Serial2.begin(NUCLEO_BAUD, SERIAL_8N1, NUCLEO_RX_PIN, NUCLEO_TX_PIN);
     Serial.printf("[UART] Serial2 ready — RX on GPIO %d\n", NUCLEO_RX_PIN);
 
@@ -292,12 +267,10 @@ void setup() {
     }
 }
 
-// ─── Loop ─────────────────────────────────────────────────────────────────────
-
 void loop() {
-    ensureWifi();        // reconnect if dropped
-    pollUart();          // read Nucleo alert strings (non-blocking)
-    pollStatus();        // ask server whether streaming is requested
-    pollMode();          // forward parent's awake/asleep command to Nucleo
-    captureAndSend();    // upload one frame if streaming is active
+    ensureWifi();
+    pollUart();
+    pollStatus();
+    pollMode();
+    captureAndSend();
 }
