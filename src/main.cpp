@@ -120,14 +120,12 @@ static void reportModeChange(const char* mode) {
 static void dispatchLine(const char* line) {
     Serial.printf("[UART] <- %s\n", line);
 
-    if      (strcmp(line, "CRY")   == 0) { sendAlert("CRYING",     "Baby crying detected"); }
-    else if (strcmp(line, "NOMOV") == 0) { sendAlert("NO_MOTION",  "No motion for 5 min - is baby awake?"); }
-    else if (strcmp(line, "DOOR")  == 0) { sendAlert("DOOR_CROSS", "Baby may be leaving room"); }
-    else if (strcmp(line, "AWAKE") == 0) { reportModeChange("SLEEP_OFF"); sendAlert("BABY_AWAKE", "Baby woke up!"); }
-    else if (strcmp(line, "MSLP")  == 0) { reportModeChange("SLEEP_ON"); }
-    // else if (strcmp(line, "HOT")  == 0) sendAlert("TEMP_HIGH",  "Temperature too high");
-    // else if (strcmp(line, "CLD")  == 0) sendAlert("TEMP_LOW",   "Temperature too low");
-    // else if (strcmp(line, "MOV")  == 0) sendAlert("MOVEMENT",   "Unexpected movement detected");
+    if      (strcmp(line, "CRY")       == 0) { sendAlert("CRYING",    "Baby crying confirmed"); }
+    else if (strcmp(line, "NOMOV")     == 0) { sendAlert("NO_MOTION", "No motion for 5 min"); }
+    else if (strcmp(line, "AWAKE")     == 0) { reportModeChange("SLEEP_OFF"); sendAlert("BABY_AWAKE", "Baby woke up (sleep mode)"); }
+    else if (strcmp(line, "TEMP_HIGH") == 0) { sendAlert("TEMP_HIGH", "Temperature > 30C"); }
+    else if (strcmp(line, "TEMP_LOW")  == 0) { sendAlert("TEMP_LOW",  "Temperature < 18C"); }
+    else if (strcmp(line, "MSLP")      == 0) { reportModeChange("SLEEP_ON"); }
 }
 
 static void pollUart() {
