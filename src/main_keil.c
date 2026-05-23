@@ -392,7 +392,6 @@ void Start_Alert(void *argument)
     }
 }
 
-// ADC DMA ping-pong - half and full complete each fire a callback
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
     uint16_t *ptr = &adc_buf[0];
